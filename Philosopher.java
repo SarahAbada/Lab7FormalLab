@@ -1,90 +1,114 @@
+import java.util.concurrent.Semaphore;
+
 public class Philosopher extends Thread {
-	private GraphicTable table;
-	private Chopstick left;
-	private Chopstick right;
-	private int ID;
-	final int timeThink_max = 5000;
-	final int timeNextFork = 100;
-	final int timeEat_max = 5000;
-	
-	Philosopher(int ID, GraphicTable table, Chopstick left, Chopstick right) {
-		this.ID = ID;
-		this.table = table;
-		this.left = left;
-		this.right = right;
-		setName("Philosopher "+ID);
-	}
-	
-	public void run() {
-		while(true){
-			
-			// Tell the table GUI that I am thinking
-			table.isThinking(ID);
-			// Print to console that I am thinking
-			System.out.println(getName()+" thinks");
-			
-			// Let the thread sleep (in order to simulate thinking time)
-			try {
-				sleep((long)(Math.random()*timeThink_max));
-			} catch(InterruptedException e) {
-				System.out.println(e);
-			}
-			
-			// Done with thinking
-			System.out.println(getName()+" finished thinking"); 
-			 
-			// and now I am hungry!
-			System.out.println(getName()+" is hungry"); 
-			// Tell the GUI I am hungry...
-			table.isHungry(ID);
-			
-			// Let's try to get the left chopstick
-			System.out.println(getName()+" wants left chopstick");
-			left.take();
-			
-			// Tell the GUI that I took the left chopstick
-			table.takeChopstick(ID, left.getID());
-			System.out.println(getName()+" got left chopstick");
-			
-			// I'll wait a bit before I try to get the next chopstick (it's philosopher's etiquette)
-			try {
-				sleep(timeNextFork);
-			} catch(InterruptedException e) {
-				System.out.println(e);
-			} 
-			
-			// Ok, enough etiquette nonesense, now I need my right chopstick
-			System.out.println(getName()+" wants right chopstick");
-			right.take();
+    private GraphicTable table;
+    private Chopstick left;
+    private Chopstick right;
+    private int ID;
+    final int timeThink_max = 5000;
+    final int timeNextFork = 100;
+    final int timeEat_max = 5000;
 
-			// Got it!
-			table.takeChopstick(ID, right.getID());
-			System.out.println(getName()+" got right chopstick");
-			
-			// Sweet taste of steamed rice....
-			System.out.println(getName()+" eats"); 
-			try {
-				sleep((long)(Math.random()*timeEat_max));
-			} catch(InterruptedException e) {
-				System.out.println(e);
-			}
-			
-			// Ok, I am really full now
-			System.out.println(getName()+" finished eating"); 
-			
-			// I just realized I did not wash these chopsticks 
-			// and the philosopher on my right is coming down with a flu 
-			
-			// I'll release the left chopstick
-			table.releaseChopstick(ID, left.getID());
-			left.release();
-			System.out.println(getName()+" released left chopstick");
+    /**
+     * Counting semaphore shared across ALL philosopher instances.
+     * Permits = 4: at most 4 philosophers may attempt to pick up chopsticks
+     * simultaneously, guaranteeing at least one chopstick pair is always
+     * acquirable and deadlock cannot occur by circular wait exhaustion.
+     *
+     * Static so all Philosopher instances share the same semaphore instance
+     * — if it were an instance field, each philosopher would have their own
+     * private semaphore, which would be meaningless.
+     *
+     * Fair = true: FIFO ordering prevents starvation of any single philosopher
+     * that keeps losing the acquire() race.
+     */
+    private static final Semaphore diningPermit = new Semaphore(4, true);
 
-			// I'll release the right chopstick
-			table.releaseChopstick(ID, right.getID());
-			right.release();
-			System.out.println(getName()+" released right chopstick");
-		
-		}
-	}
+    Philosopher(int ID, GraphicTable table, Chopstick left, Chopstick right) {
+        this.ID = ID;
+        this.table = table;
+        this.left = left;
+        this.right = right;
+        setName("Philosopher " + ID);
+    }
+
+    public void run() {
+        while (true) {
+
+            // ---- THINKING ----
+            table.isThinking(ID);
+            System.out.println(getName() + " thinks");
+            try {
+                sleep((long) (Math.random() * timeThink_max));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            System.out.println(getName() + " finished thinking");
+
+            // ---- HUNGRY ----
+            System.out.println(getName() + " is hungry");
+            table.isHungry(ID);
+
+            // Acquire a dining permit before touching any chopstick.
+            // At most 4 philosophers pass this gate concurrently, so at least
+            // one chopstick pair is always free — deadlock is structurally impossible.
+            try {
+                diningPermit.acquire();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+
+            // ---- ACQUIRE CHOPSTICKS (now safe: max 4 competing) ----
+            System.out.println(getName() + " wants left chopstick");
+            left.take();
+            table.takeChopstick(ID, left.getID());
+            System.out.println(getName() + " got left chopstick");
+
+            try {
+                sleep(timeNextFork);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                // Release resources already held before exiting
+                left.release();
+                diningPermit.release();
+                return;
+            }
+
+            System.out.println(getName() + " wants right chopstick");
+            right.take();
+            table.takeChopstick(ID, right.getID());
+            System.out.println(getName() + " got right chopstick");
+
+            // ---- EATING ----
+            System.out.println(getName() + " eats");
+            try {
+                sleep((long) (Math.random() * timeEat_max));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                // Release all resources before exiting
+                table.releaseChopstick(ID, left.getID());
+                left.release();
+                table.releaseChopstick(ID, right.getID());
+                right.release();
+                diningPermit.release();
+                return;
+            }
+            System.out.println(getName() + " finished eating");
+
+            // ---- RELEASE CHOPSTICKS ----
+            table.releaseChopstick(ID, left.getID());
+            left.release();
+            System.out.println(getName() + " released left chopstick");
+            table.releaseChopstick(ID, right.getID());
+            right.release();
+            System.out.println(getName() + " released right chopstick");
+
+            // Release the dining permit AFTER putting down both chopsticks,
+            // not before — releasing early would let a 5th philosopher enter
+            // before chopsticks are actually free, undermining the guarantee.
+            diningPermit.release();
+        }
+    }
 }
