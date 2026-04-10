@@ -7,19 +7,6 @@ public class Philosopher extends Thread {
     final int timeNextFork = 100;
     final int timeEat_max = 5000;
 
-    /**
-     * Maximum time (ms) a philosopher will wait for a single chopstick.
-     * If this deadline is missed, they release any held chopstick and
-     * return to thinking — breaking the hold-and-wait condition that
-     * contributes to deadlock.
-     *
-     * Tuning note: too small a value causes excessive contention/livelock
-     * as philosophers constantly retry; too large approaches the blocking
-     * behavior of Part A. A value meaningfully larger than timeNextFork
-     * (100ms) but small enough to recover quickly is a reasonable balance.
-     */
-    private static final int WAIT_TIMEOUT_MS = 500;
-
     Philosopher(int ID, GraphicTable table, Chopstick left, Chopstick right) {
         this.ID = ID;
         this.table = table;
@@ -46,50 +33,50 @@ public class Philosopher extends Thread {
             System.out.println(getName() + " is hungry");
             table.isHungry(ID);
 
-            // ---- ATTEMPT LEFT CHOPSTICK ----
-            System.out.println(getName() + " wants left chopstick (will wait up to " + WAIT_TIMEOUT_MS + "ms)");
+            // ---- DETERMINE ACQUISITION ORDER ----
+            // Odd philosophers: left first, then right.
+            // Even philosophers: right first, then left.
+            //
+            // Why this breaks deadlock: the circular wait condition requires
+            // every philosopher to be waiting on their neighbor in the SAME
+            // rotational direction. By flipping the acquisition order for even
+            // IDs, at least one adjacent pair will be competing for the same
+            // chopstick as their FIRST pick rather than their second — meaning
+            // one of them acquires it outright and proceeds, while the other
+            // waits. The cycle cannot close across all 5 philosophers.
+            //
+            // Concretely: philosopher 0 (even) grabs right first, philosopher
+            // 1 (odd) grabs left first. Their shared chopstick (chopstick 0)
+            // is the FIRST target of both — one wins immediately, breaking
+            // the hold-and-wait chain before it can form a full circle.
+            Chopstick first  = (ID % 2 != 0) ? left  : right;
+            Chopstick second = (ID % 2 != 0) ? right : left;
 
-            if (!left.tryTake(WAIT_TIMEOUT_MS)) {
-                // Timed out on left chopstick — holding nothing, just retry.
-                System.out.println(getName() + " timed out waiting for left chopstick, retrying...");
-                // Loop back to thinking state; a small yield avoids a tight
-                // busy-retry loop hammering the scheduler.
-                Thread.yield();
-                continue;
-            }
+            String firstName  = (ID % 2 != 0) ? "left"  : "right";
+            String secondName = (ID % 2 != 0) ? "right" : "left";
 
-            // Got the left chopstick.
-            table.takeChopstick(ID, left.getID());
-            System.out.println(getName() + " got left chopstick");
+            // ---- ACQUIRE FIRST CHOPSTICK ----
+            System.out.println(getName() + " wants " + firstName + " chopstick first");
+            first.take();
+            table.takeChopstick(ID, first.getID());
+            System.out.println(getName() + " got " + firstName + " chopstick");
 
-            // Etiquette pause before reaching for the right chopstick.
+            // Etiquette pause before reaching for the second chopstick.
             try {
                 sleep(timeNextFork);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                table.releaseChopstick(ID, left.getID());
-                left.release();
+                // Release held resource before exiting — never leak a chopstick.
+                table.releaseChopstick(ID, first.getID());
+                first.release();
                 return;
             }
 
-            // ---- ATTEMPT RIGHT CHOPSTICK ----
-            System.out.println(getName() + " wants right chopstick (will wait up to " + WAIT_TIMEOUT_MS + "ms)");
-
-            if (!right.tryTake(WAIT_TIMEOUT_MS)) {
-                // Timed out on right chopstick — MUST release the left one
-                // we are already holding, otherwise we leak a resource and
-                // the neighbor philosopher blocks forever.
-                System.out.println(getName() + " timed out waiting for right chopstick, releasing left and retrying...");
-                table.releaseChopstick(ID, left.getID());
-                left.release();
-                System.out.println(getName() + " released left chopstick due to timeout");
-                Thread.yield();
-                continue;
-            }
-
-            // Got both chopsticks.
-            table.takeChopstick(ID, right.getID());
-            System.out.println(getName() + " got right chopstick");
+            // ---- ACQUIRE SECOND CHOPSTICK ----
+            System.out.println(getName() + " wants " + secondName + " chopstick second");
+            second.take();
+            table.takeChopstick(ID, second.getID());
+            System.out.println(getName() + " got " + secondName + " chopstick");
 
             // ---- EATING ----
             System.out.println(getName() + " eats");
@@ -97,21 +84,24 @@ public class Philosopher extends Thread {
                 sleep((long) (Math.random() * timeEat_max));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                table.releaseChopstick(ID, left.getID());
-                left.release();
-                table.releaseChopstick(ID, right.getID());
-                right.release();
+                table.releaseChopstick(ID, first.getID());
+                first.release();
+                table.releaseChopstick(ID, second.getID());
+                second.release();
                 return;
             }
             System.out.println(getName() + " finished eating");
 
             // ---- RELEASE CHOPSTICKS ----
-            table.releaseChopstick(ID, left.getID());
-            left.release();
-            System.out.println(getName() + " released left chopstick");
-            table.releaseChopstick(ID, right.getID());
-            right.release();
-            System.out.println(getName() + " released right chopstick");
+            // Release order does not affect correctness here, but releasing
+            // in reverse acquisition order is a good general habit — it mirrors
+            // lock ordering conventions and makes auditing easier.
+            table.releaseChopstick(ID, second.getID());
+            second.release();
+            System.out.println(getName() + " released " + secondName + " chopstick");
+            table.releaseChopstick(ID, first.getID());
+            first.release();
+            System.out.println(getName() + " released " + firstName + " chopstick");
         }
     }
 }
