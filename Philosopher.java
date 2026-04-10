@@ -1,5 +1,3 @@
-import java.util.concurrent.Semaphore;
-
 public class Philosopher extends Thread {
     private GraphicTable table;
     private Chopstick left;
@@ -10,19 +8,17 @@ public class Philosopher extends Thread {
     final int timeEat_max = 5000;
 
     /**
-     * Counting semaphore shared across ALL philosopher instances.
-     * Permits = 4: at most 4 philosophers may attempt to pick up chopsticks
-     * simultaneously, guaranteeing at least one chopstick pair is always
-     * acquirable and deadlock cannot occur by circular wait exhaustion.
+     * Maximum time (ms) a philosopher will wait for a single chopstick.
+     * If this deadline is missed, they release any held chopstick and
+     * return to thinking — breaking the hold-and-wait condition that
+     * contributes to deadlock.
      *
-     * Static so all Philosopher instances share the same semaphore instance
-     * — if it were an instance field, each philosopher would have their own
-     * private semaphore, which would be meaningless.
-     *
-     * Fair = true: FIFO ordering prevents starvation of any single philosopher
-     * that keeps losing the acquire() race.
+     * Tuning note: too small a value causes excessive contention/livelock
+     * as philosophers constantly retry; too large approaches the blocking
+     * behavior of Part A. A value meaningfully larger than timeNextFork
+     * (100ms) but small enough to recover quickly is a reasonable balance.
      */
-    private static final Semaphore diningPermit = new Semaphore(4, true);
+    private static final int WAIT_TIMEOUT_MS = 500;
 
     Philosopher(int ID, GraphicTable table, Chopstick left, Chopstick right) {
         this.ID = ID;
@@ -50,34 +46,48 @@ public class Philosopher extends Thread {
             System.out.println(getName() + " is hungry");
             table.isHungry(ID);
 
-            // Acquire a dining permit before touching any chopstick.
-            // At most 4 philosophers pass this gate concurrently, so at least
-            // one chopstick pair is always free — deadlock is structurally impossible.
-            try {
-                diningPermit.acquire();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
+            // ---- ATTEMPT LEFT CHOPSTICK ----
+            System.out.println(getName() + " wants left chopstick (will wait up to " + WAIT_TIMEOUT_MS + "ms)");
+
+            if (!left.tryTake(WAIT_TIMEOUT_MS)) {
+                // Timed out on left chopstick — holding nothing, just retry.
+                System.out.println(getName() + " timed out waiting for left chopstick, retrying...");
+                // Loop back to thinking state; a small yield avoids a tight
+                // busy-retry loop hammering the scheduler.
+                Thread.yield();
+                continue;
             }
 
-            // ---- ACQUIRE CHOPSTICKS (now safe: max 4 competing) ----
-            System.out.println(getName() + " wants left chopstick");
-            left.take();
+            // Got the left chopstick.
             table.takeChopstick(ID, left.getID());
             System.out.println(getName() + " got left chopstick");
 
+            // Etiquette pause before reaching for the right chopstick.
             try {
                 sleep(timeNextFork);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                // Release resources already held before exiting
+                table.releaseChopstick(ID, left.getID());
                 left.release();
-                diningPermit.release();
                 return;
             }
 
-            System.out.println(getName() + " wants right chopstick");
-            right.take();
+            // ---- ATTEMPT RIGHT CHOPSTICK ----
+            System.out.println(getName() + " wants right chopstick (will wait up to " + WAIT_TIMEOUT_MS + "ms)");
+
+            if (!right.tryTake(WAIT_TIMEOUT_MS)) {
+                // Timed out on right chopstick — MUST release the left one
+                // we are already holding, otherwise we leak a resource and
+                // the neighbor philosopher blocks forever.
+                System.out.println(getName() + " timed out waiting for right chopstick, releasing left and retrying...");
+                table.releaseChopstick(ID, left.getID());
+                left.release();
+                System.out.println(getName() + " released left chopstick due to timeout");
+                Thread.yield();
+                continue;
+            }
+
+            // Got both chopsticks.
             table.takeChopstick(ID, right.getID());
             System.out.println(getName() + " got right chopstick");
 
@@ -87,12 +97,10 @@ public class Philosopher extends Thread {
                 sleep((long) (Math.random() * timeEat_max));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                // Release all resources before exiting
                 table.releaseChopstick(ID, left.getID());
                 left.release();
                 table.releaseChopstick(ID, right.getID());
                 right.release();
-                diningPermit.release();
                 return;
             }
             System.out.println(getName() + " finished eating");
@@ -104,11 +112,6 @@ public class Philosopher extends Thread {
             table.releaseChopstick(ID, right.getID());
             right.release();
             System.out.println(getName() + " released right chopstick");
-
-            // Release the dining permit AFTER putting down both chopsticks,
-            // not before — releasing early would let a 5th philosopher enter
-            // before chopsticks are actually free, undermining the guarantee.
-            diningPermit.release();
         }
     }
 }
